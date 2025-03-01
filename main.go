@@ -1,19 +1,32 @@
 package main
 
 import (
-	"fmt"
+	//"fmt"
 	"log"
 	"net/http"
 )
 
+func readinessHandler(w http.ResponseWriter, r *http.Request) {
+    if r.Method == http.MethodGet {
+        w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte(http.StatusText(http.StatusOK)))
+    }
+}
 
 func main() {
 
+    filepathRoot := "."
     mux := http.NewServeMux()
-    mux.Handle("/", http.FileServer(http.Dir(".")))
+    // strips "/" off of /app/ - remember you have /app/assets ....
+    mux.Handle("/", http.FileServer(http.Dir(filepathRoot)))
+    mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.Dir(filepathRoot))))
+    mux.HandleFunc("/healthz", readinessHandler)
 
+    port := "8080"
+    // a struct that describes a server configuration
     server := &http.Server{
-        Addr: ":8080",
+        Addr: ":" + port,
         Handler: mux,
     }
 
@@ -21,5 +34,6 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Println("Server started")
+
+    log.Printf("Serving files from %s on port: %s\n", filepathRoot, port)
 }
