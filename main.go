@@ -22,29 +22,43 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 // Create a new handler that writes the number of requests that have been counted as plain text in this format to the HTTP response:
 // Hits: x
 
-func (cfg *apiConfig) writeHitsHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
-        w.WriteHeader(http.StatusOK)
-        fmt.Fprintf(w, "Hits: %v", cfg.fileServerHits.Load())
+func (cfg *apiConfig) handleWriteHits(w http.ResponseWriter, r *http.Request) {
+    html := `
+     <html>
+      <body>
+        <h1>Welcome, Chirpy Admin</h1>
+        <p>Chirpy has been visited %v times!</p>
+      </body>
+    </html>
+    `
+    if r.Method != http.MethodGet {
+        http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+        return
     }
+    w.Header().Set("Content-Type" , "text/html; charset=utf-8")
+    w.WriteHeader(http.StatusOK)
+    fmt.Fprintf(w, html, cfg.fileServerHits.Load())
 }
 
-func (cfg *apiConfig) registerHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        cfg.fileServerHits.Store(0) // Resets the Hits.. their version
-        w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
-        w.WriteHeader(http.StatusOK)
-        //fmt.Fprintf(w, "Hits: %v", cfg.fileServerHits.Sub(cfg.fileServerHits.Load()))  Resets the Hits.. my version
+func (cfg *apiConfig) handleRegister(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+        return
     }
+    cfg.fileServerHits.Store(0) // Resets the Hits.. their version
+    w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
+    w.WriteHeader(http.StatusOK)
+    //fmt.Fprintf(w, "Hits: %v", cfg.fileServerHits.Sub(cfg.fileServerHits.Load()))  Resets the Hits.. my version
 }
 
-func readinessHandler(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte(http.StatusText(http.StatusOK)))
+func handleHealthReadiness(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+        return
     }
+    w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
+    w.WriteHeader(http.StatusOK)
+    w.Write([]byte(http.StatusText(http.StatusOK)))
 }
 
 func main() {
@@ -57,9 +71,9 @@ func main() {
     // strips "/" off of /app/
 
     mux.Handle("/app/", http.StripPrefix("/app/", cfg.middlewareMetricsInc((http.FileServer(http.Dir(filepathRoot))))))
-    mux.HandleFunc("/healthz", readinessHandler)
-    mux.HandleFunc("/metrics", cfg.writeHitsHandler)
-    mux.HandleFunc("/reset", cfg.registerHandler)
+    mux.HandleFunc("/api/healthz", handleHealthReadiness)
+    mux.HandleFunc("/admin/metrics", cfg.handleWriteHits)
+    mux.HandleFunc("/admin/reset", cfg.handleRegister)
 
     port := "8080"
     // a struct that describes a server configuration
