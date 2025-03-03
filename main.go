@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"go.uber.org/atomic"
@@ -17,15 +19,23 @@ type apiConfig struct {
 }
 func middlewareLogging(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        bodyBytes, err := io.ReadAll(r.Body)
-        if err != nil {
-            http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-            return
-        }
-        log.Printf("Request body: %s\n", string(bodyBytes))
-        // Put it back so the handler can read it again
-        r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        // read the data while simultaneously writing it to a buffer for logging.
+        // This allows you to pass the original stream to the next handler without needing to reassemble it completely.
+        var buff bytes.Buffer
+        tee := io.TeeReader(r.Body, &buff)
+        r.Body = io.NopCloser(tee)
         next.ServeHTTP(w, r)
+        log.Printf("Request body: %s\n", buff.String())
+        //bodyBytes, err := io.ReadAll(r.Body)
+        //if err != nil {
+        //    http.Error(w, "Failed to read request body", http.StatusInternalServerError)
+        //    return
+        //}
+        //log.Printf("Request body: %s\n", string(bodyBytes))
+        //// reset the body and Put it back so the handler can read it again. 'No operation' a nil 'Close'
+        //// stuff the request body back with the input
+        //r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+        //next.ServeHTTP(w, r)
     })
 }
 
@@ -87,7 +97,8 @@ func handleChirpChars(w http.ResponseWriter, r *http.Request) {
     }
 
     type responseBody struct {
-        Valid string `json:"valid"`
+        //Valid string `json:"valid"`
+        CleanedBody string `json:"cleaned_body"`
     }
 
     data, err := io.ReadAll(r.Body)
@@ -103,15 +114,57 @@ func handleChirpChars(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    characterCount := utf8.RuneCountInString(params.Body)
-    if characterCount > 140 {
+    chirpCount := utf8.RuneCountInString(params.Body)
+    if chirpCount > 140 {
         respondWithErrorHelper(w, 400, "Chirp is too long")
         return
     }
 
+    cleanedWords := handleBadChirp(params.Body)
+
     respondWithJSONHelper(w, 200, responseBody{
-        Valid: "true",
+        //Valid: "true",
+        CleanedBody: cleanedWords,
     })
+}
+
+func handleBadChirp(bodyString string) string {
+    badWords := map[string]bool{
+        "kerfuffle" : true,
+        "sharbert" : true,
+        "fornax" : true,
+    }
+    var currentWord strings.Builder
+    var result strings.Builder
+
+    for _, char := range bodyString {
+        if unicode.IsLetter(char) {
+            currentWord.WriteRune(char)
+        } else {
+            if currentWord.Len() > 0 {
+                word := strings.ToLower(currentWord.String())
+                if badWords[word] {
+                    result.WriteString("****")
+                } else {
+                    result.WriteString(currentWord.String())
+                }
+                currentWord.Reset()
+            }
+            result.WriteRune(char)
+        }
+    }
+
+    if currentWord.Len() > 0 {
+        word := strings.ToLower(currentWord.String())
+        if badWords[word] {
+            result.WriteString("****")
+        } else {
+            result.WriteString(currentWord.String())
+        }
+    }
+
+    return result.String()
+
 }
 
 func (cfg *apiConfig) handleRegister(w http.ResponseWriter, r *http.Request) {
