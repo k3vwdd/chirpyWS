@@ -10,7 +10,7 @@ import (
 )
 
 type ApiConfig struct {
-	types.ApiConfig
+	*types.ApiConfig
 }
 
 func MiddlewareLogging(next http.Handler) http.Handler {
