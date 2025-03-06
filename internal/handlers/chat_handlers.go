@@ -14,6 +14,7 @@ import (
 	"github.com/k3vwdd/chirpyWS/internal/database"
 	"github.com/k3vwdd/chirpyWS/internal/types"
 	"github.com/k3vwdd/chirpyWS/internal/utils"
+	"github.com/k3vwdd/chirpyWS/internal/auth"
 )
 
 type ApiConfig struct {
@@ -40,7 +41,6 @@ func (cfg *ApiConfig) HandleRegister(w http.ResponseWriter, r *http.Request) {
     }
 
     utils.RespondWithJSONHelper(w, 200, "Success.. All users removed from db")
-
 	//cfg.FileServerHits.Store(0) // Resets the Hits.. their version
 	//w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	//w.WriteHeader(http.StatusOK)
@@ -87,6 +87,7 @@ func (cfg *ApiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	type requestBody struct {
+        Password string `json:"password"`
 		Email string `json:"email"`
 	}
 
@@ -110,11 +111,18 @@ func (cfg *ApiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    hashPassword, err := auth.HashPassword(params.Password)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "Unable to hash password")
+		return
+    }
+
     user, err := cfg.Db.CreateUser(r.Context(), database.CreateUserParams{
         ID: uuid.New(),
         CreatedAt: time.Now(),
         UpdatedAt: time.Now(),
         Email: params.Email,
+        HashedPassword: hashPassword,
     })
 
     if err != nil {
@@ -232,4 +240,97 @@ func (cfg *ApiConfig) HandleGetChirps(w http.ResponseWriter, r *http.Request) {
     utils.RespondWithJSONHelper(w, 201, result)
 }
 
+func (cfg *ApiConfig) HandleGetSingleChirp(w http.ResponseWriter, r *http.Request) {
+
+    if r.Method != http.MethodGet {
+        http.Error(w, "Method Not Allowed", http.StatusNotFound)
+        return
+    }
+
+    type responseBody struct {
+        Id uuid.UUID `json:"id"`
+        CreatedAt time.Time `json:"created_at"`
+        UpdatedAt time.Time `json:"updated_at"`
+        Body string `json:"body"`
+        UserId uuid.UUID `json:"user_id"`
+    }
+
+    requestedChirp := r.PathValue("chirpID")
+    parsedChirp, err := uuid.Parse(requestedChirp)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 500, "unable to convert string to uuid")
+        return
+    }
+
+    getChirp, err := cfg.Db.GetChirpByID(r.Context(), parsedChirp)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 400, "chirpID doesn't exists")
+        return
+    }
+
+    chirp := responseBody{
+            Id: getChirp.ID,
+            CreatedAt: getChirp.CreatedAt,
+            UpdatedAt: getChirp.UpdatedAt,
+            Body: getChirp.Body,
+            UserId: getChirp.UserID,
+        }
+
+        utils.RespondWithJSONHelper(w, 200, chirp)
+    }
+
+func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method Not Allowed", http.StatusNotFound)
+        return
+    }
+
+    defer r.Body.Close()
+
+	type requestBody struct {
+		Email string `json:"email"`
+        Password string `json:"password"`
+	}
+
+    type responseBody struct {
+        Id uuid.UUID `json:"id"`
+        CreatedAt time.Time `json:"created_at"`
+        UpdatedAt time.Time `json:"updated_at"`
+        Email string `json:"email"`
+    }
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "couldn't read request")
+		return
+	}
+
+	params := requestBody{}
+	err = json.Unmarshal(data, &params)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "error with json format")
+		return
+	}
+
+    getUser, err := cfg.Db.GetUserByEmail(r.Context(), params.Email)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 400, "Incorrect email or password")
+		return
+    }
+
+    checkPass := auth.CheckPasswordHash(params.Password, getUser.HashedPassword)
+    if checkPass != nil {
+		utils.RespondWithErrorHelper(w, 400, "Incorrect email or password")
+        return
+    }
+
+    user := responseBody{
+        Id: getUser.ID,
+        CreatedAt: getUser.CreatedAt,
+        UpdatedAt: getUser.UpdatedAt,
+        Email: getUser.Email,
+    }
+
+	utils.RespondWithJSONHelper(w, 200, user)
+}
 
