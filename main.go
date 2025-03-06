@@ -16,6 +16,7 @@ import (
 
 func main() {
     godotenv.Load()
+    jwtKey := os.Getenv("JWTKEY")
     dbURL := os.Getenv("DB_URL")
     dbDevURL := os.Getenv("PLATFORM")
     db, err := sql.Open("postgres", dbURL)
@@ -28,6 +29,7 @@ func main() {
     apiCfg := &types.ApiConfig{
         Db: dbQueries,
         Platform: dbDevURL,
+        ApiKey: jwtKey,
     }
 
 	cfg := &handlers.ApiConfig{
@@ -46,13 +48,16 @@ func main() {
 
 	mux.Handle("/app/", http.StripPrefix("/app/", mw.MiddlewareMetricsInc((http.FileServer(http.Dir(filepathRoot))))))
 	mux.HandleFunc("GET /api/healthz", cfg.HandleHealthReadiness)
+    mux.HandleFunc("GET /api/chirps", cfg.HandleGetChirps)
+    mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.HandleGetSingleChirp)
+    mux.HandleFunc("GET /admin/metrics", cfg.HandleWriteHits)
     mux.HandleFunc("POST /api/users", cfg.HandleCreateUser)
     mux.HandleFunc("POST /api/chirps", cfg.HandleCreateChirp)
     mux.HandleFunc("POST /api/login", cfg.HandleLogin)
-    mux.HandleFunc("GET /api/chirps", cfg.HandleGetChirps)
-    mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.HandleGetSingleChirp)
-	mux.HandleFunc("GET /admin/metrics", cfg.HandleWriteHits)
+    mux.HandleFunc("POST /api/refresh", cfg.HandleRefresh)
+    mux.HandleFunc("POST /api/revoke", cfg.HandleRevokeToken)
 	mux.HandleFunc("POST /admin/reset", cfg.HandleRegister)
+    mux.HandleFunc("PUT /api/users", cfg.HandleUpdateUser)
 
 	port := "8080"
 	// a struct that describes a server configuration

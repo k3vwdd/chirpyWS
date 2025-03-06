@@ -1,7 +1,12 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -66,4 +71,39 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
     }
 
     return userID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+    authHeader := headers.Get("Authorization")
+    if authHeader == "" {
+        return "", errors.New("no Authorization header")
+   }
+
+   	authParts := strings.Split(authHeader, " ")
+
+	if len(authParts) != 2 {
+		return "", errors.New("authorization header format must be 'Bearer {token}")
+	}
+
+	authType := authParts[0]
+	authToken := authParts[1]
+
+    if authType != "Bearer" {
+        return "", errors.New("invalid authorization type")
+    }
+
+    return strings.TrimSpace(authToken), nil
+}
+
+func MakeRefreshToken() (string, error) {
+    key := make([]byte, 32)
+
+    _, err := rand.Read(key)
+    if err != nil {
+        return "", errors.New("Unable to read key data")
+    }
+
+    hexString := hex.EncodeToString(key)
+
+    return hexString, nil
 }

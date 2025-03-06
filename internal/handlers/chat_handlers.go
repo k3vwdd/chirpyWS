@@ -139,7 +139,7 @@ func (cfg *ApiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
-        http.Error(w, "Method Not Allowed", http.StatusNotFound)
+		utils.RespondWithErrorHelper(w, 404, "Unauthorized: Method Not Allowed")
         return
     }
 
@@ -147,7 +147,6 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
 
 	type requestBody struct {
 		Body string `json:"body"`
-        UserId uuid.UUID `json:"user_id"`
 	}
 
 	type responseBody struct {
@@ -157,6 +156,19 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
 		Body string `json:"body"`
         UserId uuid.UUID `json:"user_id"`
 	}
+
+    authHeader := r.Header
+    tokenString, err := auth.GetBearerToken(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 404, "Unauthorized: Invalid header")
+        return
+    }
+
+    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
+        return
+    }
 
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -184,7 +196,7 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
         CreatedAt: time.Now(),
         UpdatedAt: time.Now(),
         Body:      cleanedWords,
-        UserID:    params.UserId,
+        UserID: userID,
     })
 
     if err != nil {
@@ -198,14 +210,14 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
         CreatedAt: chirp.CreatedAt,
         UpdatedAt: chirp.UpdatedAt,
         Body: cleanedWords,
-        UserId: chirp.UserID,
+        UserId: userID,
 	})
 }
 
 func (cfg *ApiConfig) HandleGetChirps(w http.ResponseWriter, r *http.Request) {
 
     if r.Method != http.MethodGet {
-        http.Error(w, "Method Not Allowed", http.StatusNotFound)
+        utils.RespondWithErrorHelper(w, 400, "method not allowed")
         return
     }
 
@@ -290,6 +302,7 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	type requestBody struct {
 		Email string `json:"email"`
         Password string `json:"password"`
+        //ExpiresInSeconds *int `json:"expires_in_seconds"`
 	}
 
     type responseBody struct {
@@ -297,6 +310,8 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
         CreatedAt time.Time `json:"created_at"`
         UpdatedAt time.Time `json:"updated_at"`
         Email string `json:"email"`
+        Token string `json:"token"`
+        RefreshToken string `json:"refresh_token"`
     }
 
 	data, err := io.ReadAll(r.Body)
@@ -324,13 +339,179 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
         return
     }
 
+    refreshtoken, err := auth.MakeRefreshToken()
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 500, "Failed to generate refresh token")
+        return
+    }
+
+    createRefreshToken := cfg.Db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+        Token: refreshtoken,
+        UserID: getUser.ID,
+    })
+
+    if createRefreshToken != nil {
+        utils.RespondWithErrorHelper(w, 500, "Failed to create refresh token in db")
+    }
+
+    //if params.ExpiresInSeconds != nil {
+    //    requestedDuration := time.Duration(*params.ExpiresInSeconds) * time.Second
+
+    //    if requestedDuration < defaultDuration {
+    //        defaultDuration = requestedDuration
+    //    }
+    //}
+
+    jwtToken, err := auth.MakeJWT(getUser.ID, cfg.ApiKey, time.Hour * 1)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 500, "Failed to generate JWT")
+        return
+    }
+
     user := responseBody{
         Id: getUser.ID,
         CreatedAt: getUser.CreatedAt,
         UpdatedAt: getUser.UpdatedAt,
         Email: getUser.Email,
+        Token: jwtToken,
+        RefreshToken: refreshtoken,
     }
 
 	utils.RespondWithJSONHelper(w, 200, user)
 }
 
+
+func (cfg *ApiConfig) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+    type responseBody struct {
+        Token string `json:"token"`
+    }
+
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method Not Allowed", http.StatusNotFound)
+        return
+    }
+
+    authHeader := r.Header
+    refreshTokenString, err := auth.GetBearerToken(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid header")
+        return
+    }
+
+    user, err := cfg.Db.GetUserFromRefreshToken(r.Context(), refreshTokenString)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unable to retrieve token from user")
+        return
+    }
+
+    jwtToken, err := auth.MakeJWT(user.ID, cfg.ApiKey, time.Hour * 1)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Error creating jwt with duration 1 hour")
+        return
+    }
+
+    utils.RespondWithJSONHelper(w, 200, responseBody{
+        Token: jwtToken,
+    })
+
+}
+
+func (cfg *ApiConfig) HandleRevokeToken(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    authHeader := r.Header
+    refreshTokenString, err := auth.GetBearerToken(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid header")
+        return
+    }
+
+    err = cfg.Db.RevokeRefreshToken(r.Context(), refreshTokenString)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Unable to revoke refresh token")
+        return
+    }
+
+    utils.RespondWithJSONHelper(w, 204, "")
+
+}
+
+func (cfg *ApiConfig) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+
+	type requestBody struct {
+        Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	type responseBody struct {
+		Id uuid.UUID `json:"id"`
+        CreatedAt time.Time `json:"created_at"`
+        UpdatedAt time.Time `json:"updated_at"`
+        Email string `json:"email"`
+	}
+
+    authHeader := r.Header
+    tokenString, err := auth.GetBearerToken(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 404, "Unauthorized: Invalid header")
+        return
+    }
+
+    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
+        return
+    }
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "couldn't read request")
+		return
+	}
+
+	params := requestBody{}
+	err = json.Unmarshal(data, &params)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "couldn't unmarshal parameters")
+		return
+	}
+
+    hashPassword, err := auth.HashPassword(params.Password)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "Unable to hash password")
+		return
+    }
+
+    err = cfg.Db.UpdateUserEmailAndPassword(r.Context(), database.UpdateUserEmailAndPasswordParams{
+        Email: params.Email,
+        ID: userID,
+        HashedPassword: hashPassword,
+    })
+
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "Error Updating email and password")
+        return
+    }
+
+    user, err := cfg.Db.GetUserByID(r.Context(), userID)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 500, "Unalbe to fetch updated User")
+        return
+    }
+
+	utils.RespondWithJSONHelper(w, 200, responseBody{
+        Email: params.Email,
+        Id: user.ID,
+        CreatedAt: user.CreatedAt,
+        UpdatedAt: user.UpdatedAt,
+	})
+}
