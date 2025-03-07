@@ -96,6 +96,7 @@ func (cfg *ApiConfig) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
         CreatedAt time.Time `json:"created_at"`
         UpdatedAt time.Time `json:"updated_at"`
         Email string `json:"email"`
+        IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
 	data, err := io.ReadAll(r.Body)
@@ -155,6 +156,7 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
         UpdatedAt time.Time `json:"updated_at"`
 		Body string `json:"body"`
         UserId uuid.UUID `json:"user_id"`
+        IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
     authHeader := r.Header
@@ -200,9 +202,15 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
     })
 
     if err != nil {
-		fmt.Fprintf(os.Stderr, "Error Creating chirp: %v\n", err)
-		utils.RespondWithErrorHelper(w, 500, "Error creating chirp")
+		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Error creating chirp")
         return
+    }
+
+    user, err := cfg.Db.GetUserByID(r.Context(), userID)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Error creating chirp")
+        return
+
     }
 
 	utils.RespondWithJSONHelper(w, 201, responseBody{
@@ -211,6 +219,7 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
         UpdatedAt: chirp.UpdatedAt,
         Body: cleanedWords,
         UserId: userID,
+        IsChirpyRed: user.IsChirpyRed,
 	})
 }
 
@@ -291,6 +300,52 @@ func (cfg *ApiConfig) HandleGetSingleChirp(w http.ResponseWriter, r *http.Reques
         utils.RespondWithJSONHelper(w, 200, chirp)
     }
 
+func (cfg *ApiConfig) HandleDeleteChirp(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodDelete {
+        http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    authHeader := r.Header
+    tokenString, err := auth.GetBearerToken(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 404, "Unauthorized: Invalid header")
+        return
+    }
+
+    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
+        return
+    }
+
+    requestedChirp := r.PathValue("chirpID")
+    parsedChirp, err := uuid.Parse(requestedChirp)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 500, "unable to convert string to uuid")
+        return
+    }
+
+    getChirp, err := cfg.Db.GetChirpByID(r.Context(), parsedChirp)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 400, "chirpID doesn't exists")
+        return
+    }
+
+    if getChirp.UserID != userID {
+        utils.RespondWithErrorHelper(w, 403, "Forbidden: You can only delete your own chirps")
+        return
+    }
+
+    err = cfg.Db.DeleteChirpByID(r.Context(), getChirp.ID)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, 404, "Unable to remove chirp")
+        return
+    }
+
+    utils.RespondWithJSONHelper(w, 204, "Chirp deleted")
+}
+
 func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "Method Not Allowed", http.StatusNotFound)
@@ -312,6 +367,7 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
         Email string `json:"email"`
         Token string `json:"token"`
         RefreshToken string `json:"refresh_token"`
+        IsChirpyRed bool `json:"is_chirpy_red"`
     }
 
 	data, err := io.ReadAll(r.Body)
@@ -375,6 +431,7 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
         Email: getUser.Email,
         Token: jwtToken,
         RefreshToken: refreshtoken,
+        IsChirpyRed: getUser.IsChirpyRed,
     }
 
 	utils.RespondWithJSONHelper(w, 200, user)
@@ -514,4 +571,52 @@ func (cfg *ApiConfig) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
         CreatedAt: user.CreatedAt,
         UpdatedAt: user.UpdatedAt,
 	})
+}
+
+func (cfg *ApiConfig) HandleWebHook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	defer r.Body.Close()
+
+    type requestBody struct {
+        Event string `json:"event"`
+        Data struct {
+            UserId string `json:"user_id"`
+        } `json:"data"`
+    }
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "couldn't read request")
+		return
+	}
+
+	params := requestBody{}
+	err = json.Unmarshal(data, &params)
+	if err != nil {
+		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "couldn't unmarshal parameters")
+		return
+	}
+
+    if params.Event != "user.upgraded" {
+		utils.RespondWithErrorHelper(w, http.StatusNoContent, "Status No content")
+		return
+    }
+
+    user, err := uuid.Parse(params.Data.UserId)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Invalid user ID format")
+        return
+    }
+
+    err = cfg.Db.UpgradeUserToChirpyRed(r.Context(), user)
+    if err != nil {
+        utils.RespondWithErrorHelper(w, http.StatusNotFound, "Unable to upgrade user")
+        return
+    }
+
+    utils.RespondWithErrorHelper(w, http.StatusNoContent, "Status No content")
 }

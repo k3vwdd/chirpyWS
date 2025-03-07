@@ -11,7 +11,7 @@ RETURNING *;
 -- name: DeleteAllUsers :exec
 DELETE FROM users;
 -- name: GetUserByEmail :one
-SELECT id, created_at, updated_at, email, hashed_password
+SELECT id, created_at, updated_at, email, hashed_password, is_chirpy_red
 FROM users
 WHERE email = $1
 LIMIT 1;
@@ -29,10 +29,15 @@ SELECT
     created_at,
     updated_at,
     email,
-    hashed_password
+    hashed_password,
+    is_chirpy_red
 FROM
     users
 WHERE
     id = $1
 LIMIT 1;
+-- name: UpgradeUserToChirpyRed :exec
+UPDATE users
+SET is_chirpy_red = TRUE
+WHERE id = $1;
 
