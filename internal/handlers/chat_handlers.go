@@ -6,15 +6,16 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/k3vwdd/chirpyWS/internal/auth"
 	"github.com/k3vwdd/chirpyWS/internal/database"
 	"github.com/k3vwdd/chirpyWS/internal/types"
 	"github.com/k3vwdd/chirpyWS/internal/utils"
-	"github.com/k3vwdd/chirpyWS/internal/auth"
 )
 
 type ApiConfig struct {
@@ -166,7 +167,7 @@ func (cfg *ApiConfig) HandleCreateChirp(w http.ResponseWriter, r *http.Request) 
         return
     }
 
-    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    userID, err := auth.ValidateJWT(tokenString, cfg.JWTKEY)
     if err != nil {
 		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
         return
@@ -230,35 +231,60 @@ func (cfg *ApiConfig) HandleGetChirps(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-	type responseBody struct {
-		Id uuid.UUID `json:"id"`
+    type responseBody struct {
+        Id uuid.UUID `json:"id"`
         CreatedAt time.Time `json:"created_at"`
         UpdatedAt time.Time `json:"updated_at"`
-		Body string `json:"body"`
+        Body string `json:"body"`
         UserId uuid.UUID `json:"user_id"`
-	}
-
-    getChirps, err := cfg.Db.GetAllChirps(r.Context())
-    if err != nil {
-        utils.RespondWithErrorHelper(w, 500, "error getting chirps from DB")
-        return
     }
 
+
+    authorIDString := r.URL.Query().Get("author_id")
+    sortParam := r.URL.Query().Get("sort")
+    var err error
+    var chirps []database.Chirp
     result := []responseBody{}
-    for _, val := range getChirps {
-        chirps := []responseBody{
-            {
-                Id: val.ID,
-                CreatedAt: val.CreatedAt,
-                UpdatedAt: val.UpdatedAt,
-                Body: val.Body,
-                UserId: val.UserID,
-            },
+
+    if authorIDString != "" {
+        authorID, err := uuid.Parse(authorIDString)
+        if err != nil {
+            utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Invalid author ID format")
+            return
         }
-        result = append(result, chirps...)
+        chirps, err = cfg.Db.GetChirpsByAuthorID(r.Context(), authorID)
+    } else {
+        chirps, err = cfg.Db.GetAllChirps(r.Context())
     }
 
-    utils.RespondWithJSONHelper(w, 201, result)
+    if sortParam == "desc" {
+        //for i, j := 0, len(chirps)-1; i < j; i, j = i+1, j-1 {
+        //    chirps[i], chirps[j] = chirps[j], chirps[i]
+        //}
+        sort.Slice(chirps, func(i, j int) bool {
+            return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+        })
+    } else if sortParam == "asc" {
+        sort.Slice(chirps, func(i, j int) bool {
+            return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+        })
+    }
+
+    if err != nil {
+        utils.RespondWithErrorHelper(w, http.StatusInternalServerError, "Error fetching chirps")
+    }
+
+    for _, val := range chirps {
+        result = append(result, responseBody{
+            Id: val.ID,
+            CreatedAt: val.CreatedAt,
+            UpdatedAt: val.UpdatedAt,
+            Body: val.Body,
+            UserId: val.UserID,
+        })
+    }
+
+    utils.RespondWithJSONHelper(w, http.StatusOK, result)
 }
 
 func (cfg *ApiConfig) HandleGetSingleChirp(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +339,7 @@ func (cfg *ApiConfig) HandleDeleteChirp(w http.ResponseWriter, r *http.Request) 
         return
     }
 
-    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    userID, err := auth.ValidateJWT(tokenString, cfg.JWTKEY)
     if err != nil {
 		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
         return
@@ -418,7 +444,7 @@ func (cfg *ApiConfig) HandleLogin(w http.ResponseWriter, r *http.Request) {
     //    }
     //}
 
-    jwtToken, err := auth.MakeJWT(getUser.ID, cfg.ApiKey, time.Hour * 1)
+    jwtToken, err := auth.MakeJWT(getUser.ID, cfg.JWTKEY, time.Hour * 1)
     if err != nil {
         utils.RespondWithErrorHelper(w, 500, "Failed to generate JWT")
         return
@@ -461,7 +487,7 @@ func (cfg *ApiConfig) HandleRefresh(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    jwtToken, err := auth.MakeJWT(user.ID, cfg.ApiKey, time.Hour * 1)
+    jwtToken, err := auth.MakeJWT(user.ID, cfg.JWTKEY, time.Hour * 1)
     if err != nil {
 		utils.RespondWithErrorHelper(w, 401, "Error creating jwt with duration 1 hour")
         return
@@ -523,7 +549,7 @@ func (cfg *ApiConfig) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    userID, err := auth.ValidateJWT(tokenString, cfg.ApiKey)
+    userID, err := auth.ValidateJWT(tokenString, cfg.JWTKEY)
     if err != nil {
 		utils.RespondWithErrorHelper(w, 401, "Unauthorized: Invalid token")
         return
@@ -594,29 +620,41 @@ func (cfg *ApiConfig) HandleWebHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    authHeader := r.Header
+    apiKey, err := auth.GetAPIKey(authHeader)
+    if err != nil {
+		utils.RespondWithErrorHelper(w, 401, "Unauthorized: unable to get extract header")
+        return
+    }
+
+    if apiKey != cfg.APIKEY {
+		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Unauthorized: Invalid API KEY")
+        return
+    }
+
 	params := requestBody{}
 	err = json.Unmarshal(data, &params)
 	if err != nil {
-		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "couldn't unmarshal parameters")
+		utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Bad Request")
 		return
 	}
 
     if params.Event != "user.upgraded" {
-		utils.RespondWithErrorHelper(w, http.StatusNoContent, "Status No content")
+		utils.RespondWithErrorHelper(w, http.StatusNoContent, "")
 		return
     }
 
     user, err := uuid.Parse(params.Data.UserId)
     if err != nil {
-        utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Invalid user ID format")
+        utils.RespondWithErrorHelper(w, http.StatusBadRequest, "Bad Request")
         return
     }
 
     err = cfg.Db.UpgradeUserToChirpyRed(r.Context(), user)
     if err != nil {
-        utils.RespondWithErrorHelper(w, http.StatusNotFound, "Unable to upgrade user")
+        utils.RespondWithErrorHelper(w, http.StatusNotFound, "")
         return
     }
 
-    utils.RespondWithErrorHelper(w, http.StatusNoContent, "Status No content")
+    utils.RespondWithErrorHelper(w, http.StatusNoContent, "")
 }

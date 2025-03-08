@@ -17,6 +17,7 @@ import (
 func main() {
     godotenv.Load()
     jwtKey := os.Getenv("JWTKEY")
+    polkaKey := os.Getenv("POLKA_KEY")
     dbURL := os.Getenv("DB_URL")
     dbDevURL := os.Getenv("PLATFORM")
     db, err := sql.Open("postgres", dbURL)
@@ -29,7 +30,8 @@ func main() {
     apiCfg := &types.ApiConfig{
         Db: dbQueries,
         Platform: dbDevURL,
-        ApiKey: jwtKey,
+        JWTKEY: jwtKey,
+        APIKEY: polkaKey,
     }
 
 	cfg := &handlers.ApiConfig{

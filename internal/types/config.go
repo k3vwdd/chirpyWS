@@ -10,5 +10,6 @@ type ApiConfig struct {
 	FileServerHits atomic.Int32
     Db *database.Queries
     Platform string
-    ApiKey  string
+    JWTKEY  string
+    APIKEY string
 }
